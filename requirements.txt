@@ -1,0 +1,16 @@
+# AI Providers
+openai>=1.0.0
+anthropic>=0.25.0
+
+# Async support
+asyncio-mqtt>=0.11.0
+
+# JSON handling and utilities
+pydantic>=2.0.0
+
+# Environment variables
+python-dotenv>=1.0.0
+
+# Optional: For better CLI experience
+rich>=13.0.0
+click>=8.0.0

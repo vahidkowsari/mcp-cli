@@ -1,0 +1,70 @@
+{
+  "_comment": "AI MCP Host Configuration Template",
+  "_instructions": "Copy this file to mcp_config.json and customize for your needs",
+  
+  "ai": {
+    "provider": "claude",
+    "model": "claude-3-5-sonnet-20241022",
+    "api_key_env": "ANTHROPIC_API_KEY",
+    "_alternatives": {
+      "openai": {
+        "provider": "openai",
+        "model": "gpt-4",
+        "api_key_env": "OPENAI_API_KEY"
+      }
+    }
+  },
+  
+  "mcpServers": {
+    "supabase": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@supabase/mcp-server-supabase@latest",
+        "--access-token",
+        "YOUR_SUPABASE_ACCESS_TOKEN_HERE"
+      ],
+      "disabled": true,
+      "_note": "Get access token from Supabase dashboard"
+    },
+    
+    "teams-mcp": {
+      "command": "npx",
+      "args": ["-y", "@floriscornel/teams-mcp@latest"],
+      "disabled": true,
+      "_note": "Requires Microsoft Teams authentication"
+    },
+    
+    "notionApi": {
+      "command": "npx",
+      "args": ["-y", "@notionhq/notion-mcp-server"],
+      "env": {
+        "OPENAPI_MCP_HEADERS": "{\"Authorization\": \"Bearer YOUR_NOTION_API_KEY_HERE\", \"Notion-Version\": \"2022-06-28\" }"
+      },
+      "disabled": true,
+      "_note": "Get API key from Notion integrations page"
+    },
+    "browsermcp": {
+      "command": "npx",
+      "args": ["@browsermcp/mcp@latest"],
+      "disabled": false,
+      "_note": "Browser automation - no auth required"
+    },
+    
+    "slack": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "slack-mcp-server@latest",
+        "--transport",
+        "stdio"
+      ],
+      "env": {
+        "SLACK_MCP_XOXP_TOKEN": "YOUR_SLACK_BOT_TOKEN_HERE",
+        "SLACK_TEAM_ID": "YOUR_SLACK_TEAM_ID_HERE"
+      },
+      "disabled": true,
+      "_note": "Get bot token from Slack app settings"
+    }
+  }
+}

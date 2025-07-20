@@ -1,0 +1,73 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "MCP Configuration Schema",
+  "type": "object",
+  "properties": {
+    "ai": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "enum": ["openai", "claude"],
+          "description": "AI provider to use"
+        },
+        "model": {
+          "type": "string",
+          "description": "Model name to use"
+        },
+        "api_key_env": {
+          "type": "string",
+          "description": "Environment variable name containing the API key"
+        }
+      },
+      "required": ["provider", "model", "api_key_env"]
+    },
+    "mcpServers": {
+      "type": "object",
+      "patternProperties": {
+        "^[a-zA-Z0-9_-]+$": {
+          "type": "object",
+          "properties": {
+            "command": {
+              "type": "string",
+              "description": "Command to execute the MCP server"
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Arguments to pass to the command"
+            },
+            "env": {
+              "type": "object",
+              "patternProperties": {
+                "^[A-Z_][A-Z0-9_]*$": {
+                  "type": "string"
+                }
+              },
+              "description": "Environment variables to set for the MCP server"
+            },
+            "disabled": {
+              "type": "boolean",
+              "default": false,
+              "description": "Whether the MCP server is disabled"
+            },
+            "autoApprove": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "List of tools that can be auto-approved"
+            }
+          },
+          "required": ["command", "args"],
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "required": ["ai", "mcpServers"],
+  "additionalProperties": false
+}
