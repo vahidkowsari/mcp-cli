@@ -10,16 +10,15 @@ help: ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-15s\033[0m %s\n", $$1, $$2}'
 
 # Environment setup
-install: ## Install all dependencies and setup environment
+install: setup check-node ## Install all dependencies and setup environment (includes Node.js check)
+
+setup: ## Create virtual environment and install dependencies
 	@echo "🚀 Setting up AI MCP Host..."
 	@$(MAKE) check-python
 	@$(MAKE) setup-venv
 	@$(MAKE) install-deps
-	@$(MAKE) check-node
 	@$(MAKE) setup-env
 	@echo "✅ Setup complete! Run 'make run' to start the application."
-
-setup: install ## Alias for install
 
 check-python: ## Check Python version compatibility
 	@echo "🐍 Checking Python version..."
@@ -28,13 +27,13 @@ check-python: ## Check Python version compatibility
 
 setup-venv: ## Create and setup virtual environment
 	@echo "📦 Setting up virtual environment..."
-	@if [ ! -d "venv311" ]; then python3.11 -m venv venv311; fi
+	@if [ ! -d ".venv" ]; then python3.11 -m venv .venv; fi
 	@echo "✅ Python 3.11 virtual environment ready"
 
 install-deps: ## Install Python dependencies
 	@echo "📚 Installing Python dependencies..."
-	@./venv311/bin/pip install --upgrade pip
-	@./venv311/bin/pip install litellm tenacity anthropic rich python-dotenv
+	@./.venv/bin/pip install --upgrade pip
+	@./.venv/bin/pip install litellm tenacity anthropic rich python-dotenv
 	@echo "✅ Dependencies installed"
 
 check-node: ## Check Node.js availability
@@ -75,16 +74,16 @@ dev: run ## Alias for run (development mode)
 
 test: ## Run tests
 	@echo "🧪 Running tests..."
-	@./venv/bin/python -m pytest tests/ -v || echo "⚠️  No tests found"
+	@./.venv/bin/python -m pytest tests/ -v || echo "⚠️  No tests found"
 
 lint: ## Run linting checks
 	@echo "🔍 Running linting checks..."
-	@./venv/bin/python -m flake8 --max-line-length=120 --ignore=E203,W503 *.py || echo "⚠️  flake8 not installed"
-	@./venv/bin/python -m mypy --ignore-missing-imports *.py || echo "⚠️  mypy not installed"
+	@./.venv/bin/python -m flake8 --max-line-length=120 --ignore=E203,W503 *.py || echo "⚠️  flake8 not installed"
+	@./.venv/bin/python -m mypy --ignore-missing-imports *.py || echo "⚠️  mypy not installed"
 
 format: ## Format code with black
 	@echo "🎨 Formatting code..."
-	@./venv/bin/python -m black --line-length=120 *.py || echo "⚠️  black not installed"
+	@./.venv/bin/python -m black --line-length=120 *.py || echo "⚠️  black not installed"
 
 check: lint test ## Run all checks (lint + test)
 
@@ -99,7 +98,7 @@ clean: ## Clean up generated files and caches
 
 clean-all: clean ## Clean everything including virtual environment
 	@echo "🗑️  Removing virtual environment..."
-	@rm -rf venv/
+	@rm -rf .venv/
 	@echo "✅ Full cleanup complete"
 
 logs: ## Show recent application logs
@@ -111,8 +110,8 @@ status: ## Show system status and dependencies
 	@echo "======================"
 	@echo "Python: $$(python3 --version 2>/dev/null || echo 'Not found')"
 	@echo "Node.js: $$(node --version 2>/dev/null || echo 'Not found')"
-	@echo "Virtual env: $$([ -d 'venv' ] && echo 'Present' || echo 'Missing')"
-	@echo "Dependencies: $$([ -f 'venv/pyvenv.cfg' ] && echo 'Installed' || echo 'Missing')"
+	@echo "Virtual env: $$([ -d '.venv' ] && echo 'Present' || echo 'Missing')"
+	@echo "Dependencies: $$([ -f '.venv/pyvenv.cfg' ] && echo 'Installed' || echo 'Missing')"
 	@echo "Environment: $$([ -f '.env' ] && echo 'Configured' || echo 'Missing')"
 	@echo "MCP Config: $$([ -f 'mcp_config.json' ] && echo 'Present' || echo 'Missing')"
 
@@ -128,13 +127,13 @@ deploy: ## Deploy to production (placeholder)
 # Development tools
 install-dev: ## Install development dependencies
 	@echo "🛠️  Installing development dependencies..."
-	@./venv/bin/pip install black flake8 mypy pytest pytest-asyncio
+	@./.venv/bin/pip install black flake8 mypy pytest pytest-asyncio
 	@echo "✅ Development tools installed"
 
 update: ## Update all dependencies
 	@echo "⬆️  Updating dependencies..."
-	@./venv/bin/pip install --upgrade pip
-	@./venv/bin/pip install --upgrade -r requirements.txt
+	@./.venv/bin/pip install --upgrade pip
+	@./.venv/bin/pip install --upgrade -r requirements.txt
 	@echo "✅ Dependencies updated"
 
 # Docker support (future)
