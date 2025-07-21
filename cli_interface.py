@@ -153,13 +153,17 @@ class CLIInterface:
             return
         
         try:
-            print("🤔 Thinking...")
-            
             # Get available tools for AI
             available_tools = self._format_tools_for_ai(mcp_manager.get_available_tools())
             
+            print("🤔 Thinking...", flush=True)
+            
             # Get AI response
             response = await ai_client.chat(user_message, available_tools)
+            
+            # Show AI response first (before tool calls)
+            if response.get("content"):
+                print(f"\n🤖 Assistant: {response['content']}")
             
             # Handle tool calls if present
             if response.get("tool_calls"):
@@ -189,10 +193,9 @@ class CLIInterface:
                 
                 # Handle tool calls and get follow-up response
                 await self._handle_tool_calls_with_followup(response["tool_calls"], ai_client, mcp_manager)
-            
-            # Show AI response
-            if response.get("content"):
-                print(f"\n🤖 Assistant: {response['content']}")
+            elif response.get("content"):
+                # If no tool calls, add simple text response to history
+                ai_client.add_message("assistant", response["content"])
             
             # Show usage info if available
             if response.get("usage"):
