@@ -26,8 +26,9 @@ logger = logging.getLogger(__name__)
 # - For OpenAI: Modify OPENAI_REQUESTS_PER_MINUTE and OPENAI_TOKENS_PER_MINUTE
 # - For Claude: Modify CLAUDE_REQUESTS_PER_MINUTE and CLAUDE_TOKENS_PER_MINUTE
 # 
-# For 529 errors: Reduce Claude limits (e.g., 5 requests/min, 15K tokens/min)
-# For faster processing: Increase limits based on your API tier
+# For 529 errors: Use CLAUDE_CONSERVATIVE_* settings below
+# For faster processing: Use CLAUDE_AGGRESSIVE_* settings below
+# For normal usage: Use CLAUDE_REQUESTS_PER_MINUTE and CLAUDE_TOKENS_PER_MINUTE
 # 
 
 # Retry Configuration
@@ -41,9 +42,18 @@ DEFAULT_JITTER_RANGE = 0.1     # Jitter range (±10% of delay)
 OPENAI_REQUESTS_PER_MINUTE = 30
 OPENAI_TOKENS_PER_MINUTE = 80000
 
-# Claude Rate Limits (conservative during high load periods)
-CLAUDE_REQUESTS_PER_MINUTE = 10    # Reduce to 5 if getting many 529 errors
-CLAUDE_TOKENS_PER_MINUTE = 30000   # Reduce to 15000 if getting many 529 errors
+# Claude Rate Limits (based on official Anthropic limits)
+CLAUDE_REQUESTS_PER_MINUTE = 45    # Official limit: 50/min (using 90% for safety)
+CLAUDE_TOKENS_PER_MINUTE = 45000   # Official limit: 40K-50K/min (using conservative estimate)
+
+# Alternative Claude Settings for Different Scenarios:
+# 🐌 Conservative (for heavy 529 error periods):
+CLAUDE_CONSERVATIVE_REQUESTS = 15
+CLAUDE_CONSERVATIVE_TOKENS = 20000
+
+# 🚀 Aggressive (maximum throughput, risk more 529s):
+CLAUDE_AGGRESSIVE_REQUESTS = 50    # Use full official limit
+CLAUDE_AGGRESSIVE_TOKENS = 50000   # Use full official limit
 
 # Retryable HTTP status codes
 RETRYABLE_STATUS_CODES = [429, 502, 503, 504, 529]
@@ -292,6 +302,40 @@ class ClaudeProvider(BaseAIProvider):
         except Exception as e:
             logger.error(f"Claude API error: {e}")
             raise
+
+
+# ===== HELPER FUNCTIONS =====
+
+def get_claude_limits(scenario: str = "normal") -> tuple[int, int]:
+    """Get Claude rate limits for different scenarios.
+    
+    Args:
+        scenario: 'conservative', 'normal', or 'aggressive'
+        
+    Returns:
+        tuple: (requests_per_minute, tokens_per_minute)
+    """
+    scenarios = {
+        "conservative": (CLAUDE_CONSERVATIVE_REQUESTS, CLAUDE_CONSERVATIVE_TOKENS),
+        "normal": (CLAUDE_REQUESTS_PER_MINUTE, CLAUDE_TOKENS_PER_MINUTE),
+        "aggressive": (CLAUDE_AGGRESSIVE_REQUESTS, CLAUDE_AGGRESSIVE_TOKENS)
+    }
+    return scenarios.get(scenario, scenarios["normal"])
+
+
+def create_claude_provider(api_key: str, model: str = "claude-3-5-sonnet-20241022", scenario: str = "normal") -> 'ClaudeProvider':
+    """Create Claude provider with scenario-based rate limits.
+    
+    Args:
+        api_key: Anthropic API key
+        model: Claude model to use
+        scenario: 'conservative' (for 529 errors), 'normal', or 'aggressive' (max speed)
+        
+    Returns:
+        ClaudeProvider instance with appropriate rate limits
+    """
+    requests_per_min, tokens_per_min = get_claude_limits(scenario)
+    return ClaudeProvider(api_key, model, requests_per_min, tokens_per_min)
 
 
 class AIClient:
