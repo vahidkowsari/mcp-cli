@@ -174,7 +174,6 @@ class AIClient:
             raise ValueError(f"Unsupported AI provider: {provider}")
         
         logger.info(f"AI client initialized with {provider} ({self.model})")
-        logger.info(f"Using LiteLLM + Tenacity for robust reliability")
     
     def add_message(self, role: str, content: str):
         """Add a message to conversation history"""
