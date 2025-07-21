@@ -47,3 +47,4 @@ Thumbs.db
 *.log
 /.channels_cache.json
 /.users_cache.json
+/.venv
