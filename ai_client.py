@@ -13,6 +13,41 @@ import os
 
 logger = logging.getLogger(__name__)
 
+# ===== CONFIGURATION CONSTANTS =====
+# 
+# 🛠️  EASY CONFIGURATION GUIDE:
+# 
+# To adjust retry behavior:
+# - DEFAULT_MAX_RETRIES: How many times to retry failed requests (default: 5)
+# - DEFAULT_BASE_DELAY: Initial delay between retries in seconds (default: 3.0)
+# - DEFAULT_MAX_DELAY: Maximum delay cap in seconds (default: 60.0)
+# 
+# To adjust rate limiting:
+# - For OpenAI: Modify OPENAI_REQUESTS_PER_MINUTE and OPENAI_TOKENS_PER_MINUTE
+# - For Claude: Modify CLAUDE_REQUESTS_PER_MINUTE and CLAUDE_TOKENS_PER_MINUTE
+# 
+# For 529 errors: Reduce Claude limits (e.g., 5 requests/min, 15K tokens/min)
+# For faster processing: Increase limits based on your API tier
+# 
+
+# Retry Configuration
+DEFAULT_MAX_RETRIES = 5        # Number of retry attempts
+DEFAULT_BASE_DELAY = 3.0       # Base delay in seconds (exponential backoff)
+DEFAULT_MAX_DELAY = 60.0       # Maximum delay cap in seconds
+DEFAULT_JITTER_RANGE = 0.1     # Jitter range (±10% of delay)
+
+# Rate Limiting Configuration
+# OpenAI Rate Limits (adjust based on your tier: Free=3/min, Plus=50/min, Pro=5000/min)
+OPENAI_REQUESTS_PER_MINUTE = 30
+OPENAI_TOKENS_PER_MINUTE = 80000
+
+# Claude Rate Limits (conservative during high load periods)
+CLAUDE_REQUESTS_PER_MINUTE = 10    # Reduce to 5 if getting many 529 errors
+CLAUDE_TOKENS_PER_MINUTE = 30000   # Reduce to 15000 if getting many 529 errors
+
+# Retryable HTTP status codes
+RETRYABLE_STATUS_CODES = [429, 502, 503, 504, 529]
+
 
 class RateLimiter:
     """Token bucket rate limiter for API calls."""
@@ -70,7 +105,7 @@ class RateLimiter:
             self.token_tokens -= estimated_tokens
 
 
-def retry_on_api_error(max_retries: int = 3, base_delay: float = 1.0):
+def retry_on_api_error(max_retries: int = DEFAULT_MAX_RETRIES, base_delay: float = DEFAULT_BASE_DELAY, max_delay: float = DEFAULT_MAX_DELAY):
     """Decorator to retry API calls on retryable errors with exponential backoff."""
     def decorator(func):
         async def wrapper(*args, **kwargs):
@@ -82,24 +117,25 @@ def retry_on_api_error(max_retries: int = 3, base_delay: float = 1.0):
                 except Exception as e:
                     last_exception = e
                     
-                    # Check if error is retryable
-                    error_str = str(e).lower()
-                    is_retryable = (
-                        "529" in error_str or  # Overloaded
-                        "502" in error_str or  # Bad Gateway
-                        "503" in error_str or  # Service Unavailable
-                        "504" in error_str or  # Gateway Timeout
-                        "rate_limit" in error_str or
-                        "overloaded" in error_str or
-                        "timeout" in error_str
-                    )
+                    # Check if error is retryable by status code
+                    error_str = str(e)
+                    is_retryable = any(str(code) in error_str for code in RETRYABLE_STATUS_CODES)
+                    
+                    # Also check for common retryable error keywords
+                    error_str_lower = error_str.lower()
+                    is_retryable = is_retryable or any(keyword in error_str_lower for keyword in [
+                        "rate_limit", "overloaded", "timeout", "connection", "network"
+                    ])
                     
                     if not is_retryable or attempt == max_retries:
                         # Not retryable or max retries reached
                         raise e
                     
-                    # Calculate delay with exponential backoff and jitter
-                    delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
+                    # Calculate delay with exponential backoff, jitter, and max cap
+                    exponential_delay = base_delay * (2 ** attempt)
+                    jitter = random.uniform(-DEFAULT_JITTER_RANGE, DEFAULT_JITTER_RANGE) * exponential_delay
+                    delay = min(exponential_delay + jitter, max_delay)
+                    
                     logger.warning(f"API error (attempt {attempt + 1}/{max_retries + 1}): {e}. Retrying in {delay:.1f}s...")
                     await asyncio.sleep(delay)
             
@@ -121,12 +157,14 @@ class BaseAIProvider(ABC):
 class OpenAIProvider(BaseAIProvider):
     """OpenAI API provider"""
     
-    def __init__(self, api_key: str, model: str = "gpt-4"):
+    def __init__(self, api_key: str, model: str = "gpt-4", 
+                 requests_per_minute: int = OPENAI_REQUESTS_PER_MINUTE,
+                 tokens_per_minute: int = OPENAI_TOKENS_PER_MINUTE):
         self.api_key = api_key
         self.model = model
         self.client = None
-        # Conservative rate limits for OpenAI (adjust based on your tier)
-        self.rate_limiter = RateLimiter(requests_per_minute=30, tokens_per_minute=80000)
+        # Rate limits for OpenAI (configurable based on your tier)
+        self.rate_limiter = RateLimiter(requests_per_minute=requests_per_minute, tokens_per_minute=tokens_per_minute)
         self._initialize_client()
 
     def _initialize_client(self):
@@ -137,7 +175,7 @@ class OpenAIProvider(BaseAIProvider):
             raise ImportError("OpenAI library not installed. Run: pip install openai")
 
     
-    @retry_on_api_error(max_retries=3, base_delay=1.0)
+    @retry_on_api_error()  # Uses DEFAULT_MAX_RETRIES and DEFAULT_BASE_DELAY
     async def chat_completion(self, messages: List[Dict[str, str]], tools: Optional[List[Dict]] = None) -> Dict[str, Any]:
         """Generate chat completion using OpenAI API with retry logic"""
         # Estimate tokens (rough approximation: 4 chars = 1 token)
@@ -171,12 +209,14 @@ class OpenAIProvider(BaseAIProvider):
 class ClaudeProvider(BaseAIProvider):
     """Claude (Anthropic) API provider"""
     
-    def __init__(self, api_key: str, model: str = "claude-3-5-sonnet-20241022"):
+    def __init__(self, api_key: str, model: str = "claude-3-5-sonnet-20241022",
+                 requests_per_minute: int = CLAUDE_REQUESTS_PER_MINUTE,
+                 tokens_per_minute: int = CLAUDE_TOKENS_PER_MINUTE):
         self.api_key = api_key
         self.model = model
         self.client = None
-        # Conservative rate limits for Claude (adjust based on your tier)
-        self.rate_limiter = RateLimiter(requests_per_minute=40, tokens_per_minute=90000)
+        # Rate limits for Claude (configurable, conservative during high load)
+        self.rate_limiter = RateLimiter(requests_per_minute=requests_per_minute, tokens_per_minute=tokens_per_minute)
         self._initialize_client()
     
     def _initialize_client(self):
@@ -186,7 +226,7 @@ class ClaudeProvider(BaseAIProvider):
         except ImportError:
             raise ImportError("Anthropic library not installed. Run: pip install anthropic")
     
-    @retry_on_api_error(max_retries=3, base_delay=1.0)
+    @retry_on_api_error()  # Uses DEFAULT_MAX_RETRIES and DEFAULT_BASE_DELAY
     async def chat_completion(self, messages: List[Dict[str, str]], tools: Optional[List[Dict]] = None) -> Dict[str, Any]:
         """Generate chat completion using Claude API with retry logic"""
         # Estimate tokens (rough approximation: 4 chars = 1 token)
