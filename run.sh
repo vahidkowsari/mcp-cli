@@ -11,12 +11,13 @@ echo -e "${GREEN}🚀 AI MCP Host${NC}"
 echo "===================="
 
 # Check if virtual environment exists
-if [ ! -d "venv" ]; then
-    echo -e "${YELLOW}⚠️  Virtual environment not found. Creating one...${NC}"
-    python3 -m venv venv
+if [ ! -d "venv311" ]; then
+    echo -e "${YELLOW}⚠️  Python 3.11 virtual environment not found. Creating one...${NC}"
+    python3.11 -m venv venv311
     
     echo -e "${YELLOW}📦 Installing dependencies...${NC}"
-    ./venv/bin/pip install -r requirements.txt
+    ./venv311/bin/pip install --upgrade pip
+    ./venv311/bin/pip install litellm tenacity anthropic rich python-dotenv
 fi
 
 # Check for API keys (either in env vars or .env file)
@@ -37,5 +38,6 @@ echo ""
 # Set PYTHONPATH to current directory
 export PYTHONPATH="$PWD:$PYTHONPATH"
 
-# Run the application
-./venv/bin/python main.py
+# Run the application with Python 3.11
+# Pass all command line arguments to main.py
+./venv311/bin/python main.py "$@"

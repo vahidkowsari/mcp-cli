@@ -3,6 +3,7 @@
 AI MCP Host - A Python application that hosts AI assistants with MCP integration
 """
 
+import argparse
 import asyncio
 import json
 import logging
@@ -31,7 +32,7 @@ logger = logging.getLogger(__name__)
 class AIMCPHost:
     """Main application class that orchestrates AI and MCP interactions"""
     
-    def __init__(self, config_path: str = "mcp_config.json"):
+    def __init__(self, config_path: str = "mcp_config.json", verbose: bool = False):
         self.config_path = Path(config_path)
         self.config = self._load_config()
         self.mcp_manager = MCPManager(self.config.get("mcpServers", {}))
@@ -43,7 +44,7 @@ class AIMCPHost:
             logger.warning(f"AI client initialization failed: {e}")
             self.ai_client = None
         
-        self.cli = CLIInterface()
+        self.cli = CLIInterface(verbose=verbose)
         
     def _load_config(self) -> Dict[str, Any]:
         """Load configuration from JSON file"""
@@ -109,7 +110,23 @@ class AIMCPHost:
 
 async def main():
     """Main entry point"""
-    app = AIMCPHost()
+    parser = argparse.ArgumentParser(
+        description="AI MCP Host - Interactive assistant with MCP tool integration"
+    )
+    parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        help="Enable verbose output (show tool arguments and full results)"
+    )
+    parser.add_argument(
+        "-c", "--config",
+        default="mcp_config.json",
+        help="Path to MCP configuration file (default: mcp_config.json)"
+    )
+    
+    args = parser.parse_args()
+    
+    app = AIMCPHost(config_path=args.config, verbose=args.verbose)
     await app.start()
 
 

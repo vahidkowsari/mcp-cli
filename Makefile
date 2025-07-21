@@ -23,18 +23,18 @@ setup: install ## Alias for install
 
 check-python: ## Check Python version compatibility
 	@echo "🐍 Checking Python version..."
-	@python3 -c "import sys; exit(0 if sys.version_info >= (3, 8) else 1)" || (echo "❌ Python 3.8+ required" && exit 1)
-	@echo "✅ Python version OK"
+	@python3.11 -c "import sys; exit(0 if sys.version_info >= (3, 11) else 1)" || (echo "❌ Python 3.11+ required. Install with: brew install python@3.11" && exit 1)
+	@echo "✅ Python 3.11 OK"
 
 setup-venv: ## Create and setup virtual environment
 	@echo "📦 Setting up virtual environment..."
-	@if [ ! -d "venv" ]; then python3 -m venv venv; fi
-	@echo "✅ Virtual environment ready"
+	@if [ ! -d "venv311" ]; then python3.11 -m venv venv311; fi
+	@echo "✅ Python 3.11 virtual environment ready"
 
 install-deps: ## Install Python dependencies
 	@echo "📚 Installing Python dependencies..."
-	@./venv/bin/pip install --upgrade pip
-	@./venv/bin/pip install -r requirements.txt
+	@./venv311/bin/pip install --upgrade pip
+	@./venv311/bin/pip install litellm tenacity anthropic rich python-dotenv
 	@echo "✅ Dependencies installed"
 
 check-node: ## Check Node.js availability
@@ -66,6 +66,10 @@ setup-env: ## Setup environment variables
 run: ## Start the AI MCP Host application
 	@echo "🚀 Starting AI MCP Host..."
 	@./run.sh
+
+run-verbose: ## Start the AI MCP Host application with verbose output
+	@echo "🚀 Starting AI MCP Host (verbose mode)..."
+	@./run.sh --verbose
 
 dev: run ## Alias for run (development mode)
 

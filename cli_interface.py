@@ -15,8 +15,9 @@ logger = logging.getLogger(__name__)
 class CLIInterface:
     """Command line interface for interacting with AI and MCPs"""
     
-    def __init__(self):
+    def __init__(self, verbose: bool = False):
         self.running = False
+        self.verbose = verbose
     
     async def start(self, ai_client: Optional[AIClient], mcp_manager: MCPManager):
         """Start the CLI interface"""
@@ -101,8 +102,14 @@ class CLIInterface:
         print("  tools   - List available MCP tools")
         print("  status  - Show MCP connection status")
         print("  quit    - Exit the application")
-        print("\n💬 Chat with the AI by typing your message")
+        print("\n📝 Chat with the AI by typing your message")
         print("   The AI can use available MCP tools automatically")
+        print(f"\n🔍 Verbose mode: {'ON' if self.verbose else 'OFF'}")
+        if self.verbose:
+            print("   - Shows tool arguments and full results")
+        else:
+            print("   - Shows only tool names and success status")
+            print("   - Use --verbose flag to see full communication")
         print()
     
     def _show_tools(self, mcp_manager: MCPManager):
@@ -244,13 +251,19 @@ class CLIInterface:
                     arguments = tool_call.get("input", {})
                     call_id = tool_call.get("id", "")
                 
+                # Show tool call info (always show tool name, verbose for details)
                 print(f"\n🔧 Calling tool: {tool_name}")
-                print(f"📝 Arguments: {json.dumps(arguments, indent=2)}")
+                if self.verbose:
+                    print(f"📝 Arguments: {json.dumps(arguments, indent=2)}")
                 
                 # Execute the tool
                 result = await mcp_manager.call_tool(tool_name, arguments)
                 
-                print(f"✅ Tool result: {json.dumps(result, indent=2)}")
+                # Show result (verbose for full JSON, otherwise just success)
+                if self.verbose:
+                    print(f"✅ Tool result: {json.dumps(result, indent=2)}")
+                else:
+                    print(f"✅ Tool executed successfully")
                 
                 # Store result for adding to conversation
                 tool_results.append({
@@ -329,6 +342,8 @@ class CLIInterface:
                     call_id = tool_call.get("id", "")
                 
                 print(f"🔧 Calling tool: {tool_name}")
+                if self.verbose:
+                    print(f"📝 Arguments: {json.dumps(arguments, indent=2)}")
                 
                 # Execute tool
                 result = await mcp_manager.call_tool(tool_name, arguments)
@@ -346,7 +361,10 @@ class CLIInterface:
                 }
                 ai_client.conversation_history.append(tool_result)
                 
-                print(f"✅ Tool result: {json.dumps(result, indent=2)[:200]}...")
+                if self.verbose:
+                    print(f"✅ Tool result: {json.dumps(result, indent=2)[:200]}...")
+                else:
+                    print(f"✅ Tool executed successfully")
                 
             except Exception as e:
                 logger.error(f"Tool call error: {e}")

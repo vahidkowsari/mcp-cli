@@ -1,378 +1,195 @@
 """
-AI Client module for handling OpenAI and Claude API interactions
+AI Client using LiteLLM + Tenacity
+Handles multiple AI providers with robust retry and rate limiting
 """
 
 import asyncio
+import json
 import logging
-import time
-import random
-from typing import Dict, List, Optional, Any
-from abc import ABC, abstractmethod
-from dotenv import load_dotenv
 import os
+from typing import Dict, List, Optional, Any
+from dotenv import load_dotenv
+
+# Required libraries
+import litellm
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential_jitter,
+    retry_if_exception_type,
+    before_sleep_log
+)
 
 logger = logging.getLogger(__name__)
 
-# ===== CONFIGURATION CONSTANTS =====
+# Configure LiteLLM
+litellm.set_verbose = False  # Reduce noise in logs
+litellm.drop_params = True   # Handle provider differences automatically
+
+# ===== CONFIGURATION =====
 # 
-# 🛠️  EASY CONFIGURATION GUIDE:
+# 🚀 LiteLLM + Tenacity handles rate limiting and retries automatically!
 # 
-# To adjust retry behavior:
-# - DEFAULT_MAX_RETRIES: How many times to retry failed requests (default: 5)
-# - DEFAULT_BASE_DELAY: Initial delay between retries in seconds (default: 3.0)
-# - DEFAULT_MAX_DELAY: Maximum delay cap in seconds (default: 60.0)
-# 
-# To adjust rate limiting:
-# - For OpenAI: Modify OPENAI_REQUESTS_PER_MINUTE and OPENAI_TOKENS_PER_MINUTE
-# - For Claude: Modify CLAUDE_REQUESTS_PER_MINUTE and CLAUDE_TOKENS_PER_MINUTE
-# 
-# For 529 errors: Use CLAUDE_CONSERVATIVE_* settings below
-# For faster processing: Use CLAUDE_AGGRESSIVE_* settings below
-# For normal usage: Use CLAUDE_REQUESTS_PER_MINUTE and CLAUDE_TOKENS_PER_MINUTE
-# 
+# Retry Configuration (handled by Tenacity)
+MAX_RETRIES = 5              # Maximum retry attempts
+INITIAL_WAIT = 1             # Initial wait time in seconds
+MAX_WAIT = 60                # Maximum wait time in seconds
+JITTER = 5                   # Jitter range for randomization
 
-# Retry Configuration
-DEFAULT_MAX_RETRIES = 5        # Number of retry attempts
-DEFAULT_BASE_DELAY = 3.0       # Base delay in seconds (exponential backoff)
-DEFAULT_MAX_DELAY = 60.0       # Maximum delay cap in seconds
-DEFAULT_JITTER_RANGE = 0.1     # Jitter range (±10% of delay)
+# Model Configuration
+DEFAULT_CLAUDE_MODEL = "claude-3-5-sonnet-20241022"
+DEFAULT_OPENAI_MODEL = "gpt-4"
+DEFAULT_MAX_TOKENS = 2000
+DEFAULT_TEMPERATURE = 0.7
 
-# Rate Limiting Configuration
-# OpenAI Rate Limits (adjust based on your tier: Free=3/min, Plus=50/min, Pro=5000/min)
-OPENAI_REQUESTS_PER_MINUTE = 30
-OPENAI_TOKENS_PER_MINUTE = 80000
-
-# Claude Rate Limits (based on official Anthropic limits)
-CLAUDE_REQUESTS_PER_MINUTE = 45    # Official limit: 50/min (using 90% for safety)
-CLAUDE_TOKENS_PER_MINUTE = 45000   # Official limit: 40K-50K/min (using conservative estimate)
-
-# Alternative Claude Settings for Different Scenarios:
-# 🐌 Conservative (for heavy 529 error periods):
-CLAUDE_CONSERVATIVE_REQUESTS = 15
-CLAUDE_CONSERVATIVE_TOKENS = 20000
-
-# 🚀 Aggressive (maximum throughput, risk more 529s):
-CLAUDE_AGGRESSIVE_REQUESTS = 50    # Use full official limit
-CLAUDE_AGGRESSIVE_TOKENS = 50000   # Use full official limit
-
-# Retryable HTTP status codes
-RETRYABLE_STATUS_CODES = [429, 502, 503, 504, 529]
+# Exception types to retry (LiteLLM handles these automatically)
+RETRYABLE_EXCEPTIONS = (
+    Exception,  # LiteLLM wraps all provider-specific exceptions
+)
 
 
-class RateLimiter:
-    """Token bucket rate limiter for API calls."""
+def sanitize_messages(messages: List[Dict]) -> List[Dict]:
+    """Sanitize messages to ensure compatibility with LiteLLM"""
+    sanitized = []
     
-    def __init__(self, requests_per_minute: int = 50, tokens_per_minute: int = 100000):
-        self.requests_per_minute = requests_per_minute
-        self.tokens_per_minute = tokens_per_minute
-        
-        # Request rate limiting
-        self.request_tokens = requests_per_minute
-        self.request_last_refill = time.time()
-        
-        # Token rate limiting  
-        self.token_tokens = tokens_per_minute
-        self.token_last_refill = time.time()
-        
-        self._lock = asyncio.Lock()
-    
-    async def wait_for_capacity(self, estimated_tokens: int = 1000):
-        """Wait until we have capacity for a request with estimated tokens."""
-        async with self._lock:
-            now = time.time()
-            
-            # Refill request tokens (1 per minute / requests_per_minute)
-            time_passed = now - self.request_last_refill
-            self.request_tokens = min(
-                self.requests_per_minute,
-                self.request_tokens + (time_passed * self.requests_per_minute / 60.0)
-            )
-            self.request_last_refill = now
-            
-            # Refill token bucket
-            self.token_tokens = min(
-                self.tokens_per_minute,
-                self.token_tokens + (time_passed * self.tokens_per_minute / 60.0)
-            )
-            self.token_last_refill = now
-            
-            # Check if we need to wait for request capacity
-            if self.request_tokens < 1:
-                wait_time = (1 - self.request_tokens) * 60.0 / self.requests_per_minute
-                logger.info(f"Rate limit: waiting {wait_time:.1f}s for request capacity")
-                await asyncio.sleep(wait_time)
-                self.request_tokens = 1
-            
-            # Check if we need to wait for token capacity
-            if self.token_tokens < estimated_tokens:
-                wait_time = (estimated_tokens - self.token_tokens) * 60.0 / self.tokens_per_minute
-                logger.info(f"Rate limit: waiting {wait_time:.1f}s for token capacity ({estimated_tokens} tokens)")
-                await asyncio.sleep(wait_time)
-                self.token_tokens = estimated_tokens
-            
-            # Consume tokens
-            self.request_tokens -= 1
-            self.token_tokens -= estimated_tokens
-
-
-def retry_on_api_error(max_retries: int = DEFAULT_MAX_RETRIES, base_delay: float = DEFAULT_BASE_DELAY, max_delay: float = DEFAULT_MAX_DELAY):
-    """Decorator to retry API calls on retryable errors with exponential backoff."""
-    def decorator(func):
-        async def wrapper(*args, **kwargs):
-            last_exception = None
-            
-            for attempt in range(max_retries + 1):
-                try:
-                    return await func(*args, **kwargs)
-                except Exception as e:
-                    last_exception = e
-                    
-                    # Check if error is retryable by status code
-                    error_str = str(e)
-                    is_retryable = any(str(code) in error_str for code in RETRYABLE_STATUS_CODES)
-                    
-                    # Also check for common retryable error keywords
-                    error_str_lower = error_str.lower()
-                    is_retryable = is_retryable or any(keyword in error_str_lower for keyword in [
-                        "rate_limit", "overloaded", "timeout", "connection", "network"
-                    ])
-                    
-                    if not is_retryable or attempt == max_retries:
-                        # Not retryable or max retries reached
-                        raise e
-                    
-                    # Calculate delay with exponential backoff, jitter, and max cap
-                    exponential_delay = base_delay * (2 ** attempt)
-                    jitter = random.uniform(-DEFAULT_JITTER_RANGE, DEFAULT_JITTER_RANGE) * exponential_delay
-                    delay = min(exponential_delay + jitter, max_delay)
-                    
-                    logger.warning(f"API error (attempt {attempt + 1}/{max_retries + 1}): {e}. Retrying in {delay:.1f}s...")
-                    await asyncio.sleep(delay)
-            
-            # This should never be reached, but just in case
-            raise last_exception
-        return wrapper
-    return decorator
-
-
-class BaseAIProvider(ABC):
-    """Abstract base class for AI providers"""
-    
-    @abstractmethod
-    async def chat_completion(self, messages: List[Dict[str, str]], tools: Optional[List[Dict]] = None) -> Dict[str, Any]:
-        """Generate chat completion with optional tool calls"""
-        pass
-
-
-class OpenAIProvider(BaseAIProvider):
-    """OpenAI API provider"""
-    
-    def __init__(self, api_key: str, model: str = "gpt-4", 
-                 requests_per_minute: int = OPENAI_REQUESTS_PER_MINUTE,
-                 tokens_per_minute: int = OPENAI_TOKENS_PER_MINUTE):
-        self.api_key = api_key
-        self.model = model
-        self.client = None
-        # Rate limits for OpenAI (configurable based on your tier)
-        self.rate_limiter = RateLimiter(requests_per_minute=requests_per_minute, tokens_per_minute=tokens_per_minute)
-        self._initialize_client()
-
-    def _initialize_client(self):
-        try:
-            import openai
-            self.client = openai.AsyncOpenAI(api_key=self.api_key)
-        except ImportError:
-            raise ImportError("OpenAI library not installed. Run: pip install openai")
-
-    
-    @retry_on_api_error()  # Uses DEFAULT_MAX_RETRIES and DEFAULT_BASE_DELAY
-    async def chat_completion(self, messages: List[Dict[str, str]], tools: Optional[List[Dict]] = None) -> Dict[str, Any]:
-        """Generate chat completion using OpenAI API with retry logic"""
-        # Estimate tokens (rough approximation: 4 chars = 1 token)
-        estimated_tokens = sum(len(str(msg.get('content', ''))) for msg in messages) // 4 + 1000
-        await self.rate_limiter.wait_for_capacity(estimated_tokens)
-        
-        try:
-            kwargs = {
-                "model": self.model,
-                "messages": messages,
-                "temperature": 0.7,
-                "max_tokens": 2000
-            }
-            
-            if tools:
-                kwargs["tools"] = tools
-                kwargs["tool_choice"] = "auto"
-            
-            response = await self.client.chat.completions.create(**kwargs)
-            
-            return {
-                "content": response.choices[0].message.content,
-                "tool_calls": getattr(response.choices[0].message, 'tool_calls', None),
-                "usage": response.usage.model_dump() if response.usage else None
-            }
-        except Exception as e:
-            logger.error(f"OpenAI API error: {e}")
-            raise
-
-
-class ClaudeProvider(BaseAIProvider):
-    """Claude (Anthropic) API provider"""
-    
-    def __init__(self, api_key: str, model: str = "claude-3-5-sonnet-20241022",
-                 requests_per_minute: int = CLAUDE_REQUESTS_PER_MINUTE,
-                 tokens_per_minute: int = CLAUDE_TOKENS_PER_MINUTE):
-        self.api_key = api_key
-        self.model = model
-        self.client = None
-        # Rate limits for Claude (configurable, conservative during high load)
-        self.rate_limiter = RateLimiter(requests_per_minute=requests_per_minute, tokens_per_minute=tokens_per_minute)
-        self._initialize_client()
-    
-    def _initialize_client(self):
-        try:
-            import anthropic
-            self.client = anthropic.AsyncAnthropic(api_key=self.api_key)
-        except ImportError:
-            raise ImportError("Anthropic library not installed. Run: pip install anthropic")
-    
-    @retry_on_api_error()  # Uses DEFAULT_MAX_RETRIES and DEFAULT_BASE_DELAY
-    async def chat_completion(self, messages: List[Dict[str, str]], tools: Optional[List[Dict]] = None) -> Dict[str, Any]:
-        """Generate chat completion using Claude API with retry logic"""
-        # Estimate tokens (rough approximation: 4 chars = 1 token)
-        estimated_tokens = sum(len(str(msg.get('content', ''))) for msg in messages) // 4 + 1000
-        await self.rate_limiter.wait_for_capacity(estimated_tokens)
-        
-        try:
-            # Convert messages format for Claude
-            system_message = None
-            claude_messages = []
-            
-            for msg in messages:
-                if msg["role"] == "system":
-                    system_message = msg["content"]
+    for message in messages:
+        # Handle Claude-specific message formats
+        if isinstance(message.get("content"), list):
+            # Convert Claude content blocks to simple text
+            text_content = ""
+            for block in message["content"]:
+                if isinstance(block, dict):
+                    if block.get("type") == "text":
+                        text_content += block.get("text", "")
+                    elif block.get("type") == "tool_result":
+                        # Convert tool results to simple text format
+                        result_content = block.get("content", "")
+                        text_content += f"Tool result: {result_content}"
                 else:
-                    # Handle both string content and structured content for Claude
-                    if isinstance(msg["content"], str):
-                        claude_messages.append({
-                            "role": msg["role"],
-                            "content": msg["content"]
-                        })
-                    else:
-                        # Already in Claude format (tool results, etc.)
-                        claude_messages.append(msg)
+                    # Handle string content blocks
+                    text_content += str(block)
             
-            kwargs = {
-                "model": self.model,
-                "messages": claude_messages,
-                "max_tokens": 2000,
-                "temperature": 0.7
-            }
-            
-            if system_message:
-                kwargs["system"] = system_message
-            
-            if tools:
-                kwargs["tools"] = tools
-            
-            response = await self.client.messages.create(**kwargs)
-            
-            # Extract tool calls from Claude response
-            tool_calls = []
-            content = ""
-            
-            for content_block in response.content:
-                if content_block.type == "text":
-                    content += content_block.text
-                elif content_block.type == "tool_use":
-                    tool_calls.append({
-                        "id": content_block.id,
-                        "name": content_block.name,
-                        "input": content_block.input
+            sanitized.append({
+                "role": message["role"],
+                "content": text_content.strip() or "[No content]"
+            })
+        else:
+            # Already in simple format
+            sanitized.append(message)
+    
+    return sanitized
+
+
+# Retry decorator using Tenacity
+@retry(
+    stop=stop_after_attempt(MAX_RETRIES),
+    wait=wait_exponential_jitter(initial=INITIAL_WAIT, max=MAX_WAIT, jitter=JITTER),
+    retry=retry_if_exception_type(RETRYABLE_EXCEPTIONS),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+    reraise=True
+)
+async def robust_ai_call(messages: List[Dict], tools: Optional[List[Dict]] = None, model: str = DEFAULT_CLAUDE_MODEL) -> Dict[str, Any]:
+    """AI call with automatic retry and rate limiting via LiteLLM"""
+    try:
+        # Prepare the call parameters
+        call_params = {
+            "model": model,
+            "messages": messages,
+            "temperature": DEFAULT_TEMPERATURE,
+            "max_tokens": DEFAULT_MAX_TOKENS,
+        }
+        
+        # Only add tools if they exist and are not empty
+        if tools and len(tools) > 0:
+            call_params["tools"] = tools
+        
+        # LiteLLM handles all the complexity for us!
+        response = await litellm.acompletion(**call_params)
+        
+        # Convert LiteLLM response to our expected format
+        tool_calls = getattr(response.choices[0].message, 'tool_calls', None)
+        converted_tool_calls = None
+        
+        if tool_calls:
+            # Convert OpenAI-style tool calls to our expected format
+            converted_tool_calls = []
+            for tool_call in tool_calls:
+                if hasattr(tool_call, 'function'):
+                    # OpenAI format - convert to our format
+                    converted_tool_calls.append({
+                        "id": tool_call.id,
+                        "name": tool_call.function.name,
+                        "input": json.loads(tool_call.function.arguments) if isinstance(tool_call.function.arguments, str) else tool_call.function.arguments
                     })
-            
-            return {
-                "content": content,
-                "tool_calls": tool_calls if tool_calls else None,
-                "usage": {
-                    "input_tokens": response.usage.input_tokens,
-                    "output_tokens": response.usage.output_tokens
-                } if response.usage else None
-            }
-        except Exception as e:
-            logger.error(f"Claude API error: {e}")
-            raise
-
-
-# ===== HELPER FUNCTIONS =====
-
-def get_claude_limits(scenario: str = "normal") -> tuple[int, int]:
-    """Get Claude rate limits for different scenarios.
-    
-    Args:
-        scenario: 'conservative', 'normal', or 'aggressive'
+                else:
+                    # Already in our expected format
+                    converted_tool_calls.append(tool_call)
         
-    Returns:
-        tuple: (requests_per_minute, tokens_per_minute)
-    """
-    scenarios = {
-        "conservative": (CLAUDE_CONSERVATIVE_REQUESTS, CLAUDE_CONSERVATIVE_TOKENS),
-        "normal": (CLAUDE_REQUESTS_PER_MINUTE, CLAUDE_TOKENS_PER_MINUTE),
-        "aggressive": (CLAUDE_AGGRESSIVE_REQUESTS, CLAUDE_AGGRESSIVE_TOKENS)
-    }
-    return scenarios.get(scenario, scenarios["normal"])
-
-
-def create_claude_provider(api_key: str, model: str = "claude-3-5-sonnet-20241022", scenario: str = "normal") -> 'ClaudeProvider':
-    """Create Claude provider with scenario-based rate limits.
-    
-    Args:
-        api_key: Anthropic API key
-        model: Claude model to use
-        scenario: 'conservative' (for 529 errors), 'normal', or 'aggressive' (max speed)
+        return {
+            "content": response.choices[0].message.content or "",
+            "tool_calls": converted_tool_calls,
+            "usage": {
+                "input_tokens": getattr(response.usage, 'prompt_tokens', 0),
+                "output_tokens": getattr(response.usage, 'completion_tokens', 0)
+            } if response.usage else None
+        }
         
-    Returns:
-        ClaudeProvider instance with appropriate rate limits
-    """
-    requests_per_min, tokens_per_min = get_claude_limits(scenario)
-    return ClaudeProvider(api_key, model, requests_per_min, tokens_per_min)
+    except Exception as e:
+        logger.error(f"AI API call failed: {e}")
+        raise
 
 
 class AIClient:
-    """Main AI client that manages different providers"""
+    """AI client using LiteLLM + Tenacity"""
     
-    def __init__(self, config: Dict[str, Any]):
-        self.config = config
-        self.provider = self._create_provider()
-        self.conversation_history: List[Dict[str, str]] = []
-    
-    def _create_provider(self) -> BaseAIProvider:
-        """Create appropriate AI provider based on config"""
-        provider_name = self.config.get("provider", "openai").lower()
-        
-        if provider_name == "openai":
-            api_key = os.getenv(self.config.get("api_key_env", "OPENAI_API_KEY"))
-            if not api_key:
-                raise ValueError(f"API key not found in environment variable {self.config.get('api_key_env', 'OPENAI_API_KEY')}")
-            return OpenAIProvider(api_key, self.config.get("model", "gpt-4"))
-        elif provider_name == "claude":
-            api_key = os.getenv(self.config.get("api_key_env", "ANTHROPIC_API_KEY"))
-            if not api_key:
-                raise ValueError(f"API key not found in environment variable {self.config.get('api_key_env', 'ANTHROPIC_API_KEY')}")
-            return ClaudeProvider(api_key, self.config.get("model", "claude-3-5-sonnet-20241022"))
+    def __init__(self, ai_config: Dict[str, Any]):
+        # Handle both full config and just ai section
+        if "ai" in ai_config:
+            # Full config passed
+            self.config = ai_config
+            ai_settings = ai_config["ai"]
         else:
-            raise ValueError(f"Unsupported AI provider: {provider_name}")
+            # Just ai section passed (from main.py)
+            self.config = {"ai": ai_config}
+            ai_settings = ai_config
+        
+        self.conversation_history: List[Dict[str, Any]] = []
+        
+        # Set up API keys from environment
+        load_dotenv()
+        
+        # Configure LiteLLM with API keys
+        provider = ai_settings.get("provider", "claude")
+        if provider == "claude":
+            api_key = os.getenv(ai_settings.get("api_key_env", "ANTHROPIC_API_KEY"))
+            if api_key:
+                os.environ["ANTHROPIC_API_KEY"] = api_key
+            self.model = ai_settings.get("model", DEFAULT_CLAUDE_MODEL)
+        elif provider == "openai":
+            api_key = os.getenv(ai_settings.get("api_key_env", "OPENAI_API_KEY"))
+            if api_key:
+                os.environ["OPENAI_API_KEY"] = api_key
+            self.model = ai_settings.get("model", DEFAULT_OPENAI_MODEL)
+        else:
+            raise ValueError(f"Unsupported AI provider: {provider}")
+        
+        logger.info(f"AI client initialized with {provider} ({self.model})")
+        logger.info(f"Using LiteLLM + Tenacity for robust reliability")
     
     def add_message(self, role: str, content: str):
-        """Add message to conversation history"""
-        self.conversation_history.append({"role": role, "content": content})
+        """Add a message to conversation history"""
+        self.conversation_history.append({
+            "role": role,
+            "content": content
+        })
     
     def clear_history(self):
         """Clear conversation history"""
         self.conversation_history.clear()
+        logger.info("Conversation history cleared")
     
     async def chat(self, user_message: str, available_tools: Optional[List[Dict]] = None) -> Dict[str, Any]:
-        """Send chat message and get response"""
+        """Send chat message and get response using robust retry logic"""
         # Add user message to history (only if not empty)
         if user_message.strip():
             self.add_message("user", user_message)
@@ -385,11 +202,47 @@ class AIClient:
             }
         ] + self.conversation_history
         
-        # Get response from AI provider
-        response = await self.provider.chat_completion(messages, available_tools)
+        # Sanitize messages to ensure LiteLLM compatibility
+        sanitized_messages = sanitize_messages(messages)
+        
+        # Use our robust AI call with automatic retries and rate limiting
+        response = await robust_ai_call(sanitized_messages, available_tools, self.model)
         
         # Only add assistant response to history if no tool calls (tool calls are handled separately)
         if response["content"] and not response.get("tool_calls"):
             self.add_message("assistant", response["content"])
         
         return response
+
+
+# Helper functions for easy configuration switching
+def get_claude_model(performance_mode: str = "balanced") -> str:
+    """Get Claude model based on performance requirements"""
+    models = {
+        "fast": "claude-3-5-haiku-20241022",      # Fastest, cheapest
+        "balanced": "claude-3-5-sonnet-20241022", # Best balance (default)
+        "powerful": "claude-3-opus-20240229"      # Most capable
+    }
+    return models.get(performance_mode, models["balanced"])
+
+
+def get_openai_model(performance_mode: str = "balanced") -> str:
+    """Get OpenAI model based on performance requirements"""
+    models = {
+        "fast": "gpt-3.5-turbo",     # Fastest, cheapest
+        "balanced": "gpt-4",         # Best balance (default)
+        "powerful": "gpt-4-turbo"    # Most capable
+    }
+    return models.get(performance_mode, models["balanced"])
+
+
+def create_ai_client(config: Dict[str, Any], performance_mode: str = "balanced") -> AIClient:
+    """Create AI client with performance-optimized model selection"""
+    # Auto-select best model for performance mode
+    provider = config.get("ai", {}).get("provider", "claude")
+    if provider == "claude":
+        config["ai"]["model"] = get_claude_model(performance_mode)
+    elif provider == "openai":
+        config["ai"]["model"] = get_openai_model(performance_mode)
+    
+    return AIClient(config)
