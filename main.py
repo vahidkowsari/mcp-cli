@@ -20,6 +20,7 @@ except ImportError:
 from ai_client import AIClient
 from mcp_manager import MCPManager
 from cli_interface import CLIInterface
+from chat_service import ChatService
 
 # Configure logging
 logging.basicConfig(
