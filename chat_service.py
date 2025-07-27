@@ -1,12 +1,14 @@
 """
-Chat Service - Core chat functionality that can be used by CLI, API, or other interfaces
+Chat service that integrates AI client with enhanced MCP tools
+Features improved tool schema formatting for better AI understanding
 """
 
 import asyncio
 import json
 import logging
-from typing import Dict, Any, List, Optional, Callable, Union
+from typing import Dict, List, Any, Optional, Callable
 from dataclasses import dataclass
+
 from ai_client import AIClient
 from mcp_manager import MCPManager
 
@@ -177,15 +179,65 @@ class ChatService:
             )
     
     def _format_tools_for_ai(self, tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Format MCP tools for AI consumption"""
+        """Format MCP tools for AI consumption with enhanced parameter descriptions"""
         formatted_tools = []
         
         for tool in tools:
-            # Format for Claude API
+            # Get basic tool info
+            name = tool.get("name", "")
+            description = tool.get("description", "")
+            input_schema = tool.get("inputSchema", {})  # FastMCP uses inputSchema, not input_schema
+            
+            # Enhance description with parameter info for better AI understanding
+            enhanced_description = description
+            
+            # Add information about ALL parameters (required and optional)
+            properties = input_schema.get("properties", {})
+            required_params = input_schema.get("required", [])
+            
+            if properties:
+                param_info_lines = []
+                
+                # Add required parameters first
+                if required_params:
+                    required_hints = []
+                    for param in required_params:
+                        if param in properties:
+                            param_details = properties[param]
+                            param_desc = param_details.get("description", "")
+                            param_type = param_details.get("type", "")
+                            type_info = f" ({param_type})" if param_type else ""
+                            required_hints.append(f"'{param}'{type_info}: {param_desc}")
+                    
+                    if required_hints:
+                        param_info_lines.append(f"Required parameters: {', '.join(required_hints)}")
+                
+                # Add optional parameters
+                optional_params = [p for p in properties.keys() if p not in required_params]
+                if optional_params:
+                    optional_hints = []
+                    for param in optional_params:
+                        param_details = properties[param]
+                        param_desc = param_details.get("description", "")
+                        param_type = param_details.get("type", "")
+                        type_info = f" ({param_type})" if param_type else ""
+                        optional_hints.append(f"'{param}'{type_info}: {param_desc}")
+                    
+                    if optional_hints:
+                        param_info_lines.append(f"Optional parameters: {', '.join(optional_hints)}")
+                
+                # Add parameter information to description
+                if param_info_lines:
+                    enhanced_description += f"\n\n{'; '.join(param_info_lines)}"
+            
+            # Format for OpenAI function calling format (works better with most AI models)
             formatted_tool = {
-                "name": tool.get("name", ""),
-                "description": tool.get("description", ""),
-                "input_schema": tool.get("inputSchema", {})
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": enhanced_description,
+                    "parameters": input_schema
+                }
             }
             formatted_tools.append(formatted_tool)
         

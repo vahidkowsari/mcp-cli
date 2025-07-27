@@ -146,9 +146,15 @@ class MCPConnection:
             await self._send_request(request)
             response = await self._read_response()
             
+            logger.debug(f"MCP {self.name} tools/list response: {response}")
+            
             if response and response.get("result"):
                 self.tools = response["result"].get("tools", [])
                 logger.info(f"MCP {self.name} loaded {len(self.tools)} tools")
+            elif response and response.get("error"):
+                logger.error(f"MCP {self.name} tools/list error: {response['error']}")
+            else:
+                logger.warning(f"MCP {self.name} tools/list returned no result: {response}")
                 
         except Exception as e:
             logger.error(f"Failed to list tools for {self.name}: {e}")

@@ -24,7 +24,7 @@ from chat_service import ChatService
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
@@ -50,15 +50,19 @@ class AIMCPHost:
     def _load_config(self) -> Dict[str, Any]:
         """Load configuration from JSON file"""
         if not self.config_path.exists():
-            logger.warning(f"Config file {self.config_path} not found, using defaults")
+            logger.warning(f"Config file {self.config_path} not found, creating default config")
             return self._create_default_config()
         
         try:
             with open(self.config_path, 'r') as f:
                 return json.load(f)
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON in config file {self.config_path}: {e}")
+            logger.error(f"Please fix the JSON syntax error and try again.")
+            raise SystemExit(1)
         except Exception as e:
-            logger.error(f"Error loading config: {e}")
-            return self._create_default_config()
+            logger.error(f"Error reading config file {self.config_path}: {e}")
+            raise SystemExit(1)
     
     def _create_default_config(self) -> Dict[str, Any]:
         """Create default configuration"""
@@ -73,7 +77,7 @@ class AIMCPHost:
                     "command": "python",
                     "args": ["-m", "example_mcp_server"],
                     "env": {},
-                    "disabled": true
+                    "disabled": True
                 }
             }
         }

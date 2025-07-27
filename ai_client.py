@@ -197,7 +197,15 @@ class AIClient:
         messages = [
             {
                 "role": "system",
-                "content": "You are a helpful AI assistant with access to various tools through MCP (Model Context Protocol). Use the available tools when appropriate to help the user."
+                "content": (
+                    "You are a helpful AI assistant with access to various tools through MCP "
+                    "(Model Context Protocol). When using tools:\n"
+                    "1. Carefully read the tool descriptions which include parameter information\n"
+                    "2. Always provide ALL required parameters when calling a tool\n"
+                    "3. Use the exact parameter names and types as specified in the tool schema\n"
+                    "4. Pay attention to both required and optional parameters listed in descriptions\n"
+                    "5. If you're unsure about a parameter, ask the user for clarification rather than guessing"
+                )
             }
         ] + self.conversation_history
         
