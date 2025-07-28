@@ -40,13 +40,21 @@ make install
 Set up your API keys by creating a `.env` file:
 
 ```bash
-# Copy the example file (done automatically by make install)
-cp .env.example .env
+# Create .env file with your API keys
+cat > .env << EOF
+# Choose one or both AI providers
+ANTHROPIC_API_KEY=your-anthropic-api-key-here
+OPENAI_API_KEY=your-openai-api-key-here
 
-# Edit .env and add your API keys
-# ANTHROPIC_API_KEY=your-anthropic-api-key
-# OPENAI_API_KEY=your-openai-api-key
+# Optional: MCP server tokens (configure as needed)
+# SLACK_MCP_XOXP_TOKEN=your-slack-bot-token
+# SLACK_TEAM_ID=your-slack-team-id
+# NOTION_API_KEY=your-notion-api-key
+# SUPABASE_ACCESS_TOKEN=your-supabase-token
+EOF
 ```
+
+**Important**: Never commit `.env` files to git. They are automatically ignored by `.gitignore`.
 
 #### MCP Servers Configuration
 

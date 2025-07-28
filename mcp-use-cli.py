@@ -224,6 +224,10 @@ async def main():
         choices=["openai", "anthropic"],
         help="Preferred LLM provider (auto-detect if not specified)"
     )
+    parser.add_argument(
+        "--prompt",
+        help="Execute a single prompt and exit"
+    )
     
     args = parser.parse_args()
     
@@ -250,8 +254,17 @@ async def main():
         # Initialize MCP connections (includes LLM setup)
         await cli.initialize()
         
-        # Determine mode: batch, stdin, or interactive
-        if args.batch:
+        # Determine mode: prompt, batch, stdin, or interactive
+        if args.prompt:
+            # Execute single prompt and exit
+            response = await cli.library.query(args.prompt)
+            if response.success:
+                print(cli.format_output(response.content))
+            else:
+                print(f"❌ Error: {response.error}")
+                return 1
+                
+        elif args.batch:
             # Read commands from file
             batch_file = Path(args.batch)
             if not batch_file.exists():
