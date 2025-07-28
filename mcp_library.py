@@ -440,49 +440,80 @@ class MCPLibrary:
 
     
     async def _safe_agent_run(self, agent, prompt: str) -> str:
-        """Execute agent with schema-aware prompting and error handling"""
+        """Execute agent with enhanced prompting and error handling"""
         try:
-            # Enhance prompt with generic schema guidance
+            # Add basic guidance for information gathering and error handling
             enhanced_prompt = f"""{prompt}
 
-IMPORTANT GUIDELINES:
-- Plan your use of tools and check the tool description before using it
-- Make sure you know the parameters for the tools before using them. If you dont have the parameters use other tools to find them
-- If you are not sure about the tool to use, ask for clarification
-
-VALIDATION ERROR HANDLING:
-- If you get a validation error from a tool call, carefully read the error message
-- Use the error details to understand what the API schema expects vs what you provided
-- Look up the tool's schema/documentation to understand the correct format
-- Fix the parameter format based on the error message and try the tool call again
-- Don't give up after one validation error - use the error information to correct your approach
-
-SCHEMA FORMATTING:
-- Check API schemas carefully - some properties expect arrays, others expect simple values
-- For rich text content properties (like 'title', 'children'), use array format: [{{"text": {{"content": "value"}}}}]
-- For simple string properties (like 'type', 'id', 'name'), use plain string values: "value"
-- For boolean properties, use plain boolean values: true or false
-- For object properties, provide the expected object structure
-- NEVER wrap simple scalar values (strings, numbers, booleans) in arrays unless the schema specifically requires it
-- Only use array format for properties that are explicitly documented as arrays/lists in the API schema
-
-INFORMATION GATHERING:
+GUIDANCE:
 - Before asking the user for information, try to find it using available tools first
-- If you need a page ID or UUID, search for the page by name using available search/list tools
-- If you need specific identifiers, explore the available tools to find them programmatically
-- Only ask the user for information as a last resort when tools cannot provide it
-- Be proactive in using available tools to gather required information"""
+- If you need identifiers (like page IDs), search for them using available search/list tools
+- Be proactive in using available tools to gather required information
+- If a tool call fails, read the error message and try to correct the issue"""
             
             # Execute the agent with enhanced prompt
             response = await agent.run(enhanced_prompt)
             return response
+            
         except Exception as e:
+            error_str = str(e)
+            
+            # Provide helpful context for common validation errors
+            if self._is_schema_validation_error(error_str):
+                if self.config.verbose:
+                    print(f"📋 Schema validation error detected:")
+                    print(f"   {self._get_validation_error_explanation(error_str)}")
+                    print(f"   This is a known limitation - see documentation for details.")
+            
             # Log the error for debugging if verbose mode is enabled
             if self.config.verbose:
                 print(f"⚠️  Agent execution error: {str(e)[:200]}...")
             
-            # Re-raise the error to let mcp-use's built-in error handling take over
+            # Re-raise the error for the caller to handle
             raise e
+    
+    def _is_schema_validation_error(self, error_str: str) -> bool:
+        """Check if this is a schema validation error that we can provide context for"""
+        # Look for common Pydantic validation error patterns
+        validation_patterns = [
+            "validation error for DynamicModel",
+            "Input should be a valid list",
+            "Input should be a valid dict", 
+            "type=list_type",
+            "type=dict_type",
+            "type=missing",
+            "Field required",
+            "ValidationError",
+        ]
+        
+        return any(pattern in error_str for pattern in validation_patterns)
+    
+    def _get_validation_error_explanation(self, error_str: str) -> str:
+        """Provide a helpful explanation of the validation error"""
+        if "Input should be a valid list" in error_str and "type=list_type" in error_str:
+            if "properties.title" in error_str:
+                return "Rich text properties like 'title' expect arrays: [{'text': {'content': 'value'}}] not {'text': {'content': 'value'}}"
+            elif "properties.children" in error_str:
+                return "Block content properties like 'children' expect arrays of block objects"
+            else:
+                return "The API expects an array/list format, but received a single object"
+        
+        elif "Input should be a valid dict" in error_str and "type=dict_type" in error_str:
+            return "The API expects an object/dict format, but received an array"
+        
+        elif "Field required" in error_str and "type=missing" in error_str:
+            if "parent.type" in error_str:
+                return "Missing 'parent.type' field - should be 'page_id' for Notion page creation"
+            elif "properties" in error_str:
+                return "Missing 'properties' field - this should contain the actual page content/data"
+            else:
+                return "Missing required fields - check the API schema for all required parameters"
+        
+        elif "validation error for DynamicModel" in error_str:
+            return "Schema validation failed - parameter format doesn't match API expectations"
+        
+        else:
+            return "Parameter validation failed - check the error message for specific format requirements"
     
     async def batch_query(self, prompts: List[str]) -> List[MCPResponse]:
         """
