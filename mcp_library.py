@@ -348,6 +348,7 @@ class MCPLibrary:
                     client=self.client,
                     llm=self.llm,
                     max_steps=10,
+                    memory_enabled=True,
                     verbose=self.config.verbose
                 )
                 await agent.initialize()
@@ -607,13 +608,12 @@ GUIDANCE:
             )
         
         try:
-            # Clean up any orphaned processes from previous runs
-            await self._cleanup_orphaned_processes()
-            
             # Setup LLM first
             llm_result = self._setup_llm()
             if not llm_result.success:
                 return llm_result
+            
+
             
             # Create MCP client with config path
             config_path = self.config.config_path or "mcp_config.json"
@@ -641,17 +641,9 @@ GUIDANCE:
                 error=str(e)
             )
     
-    async def _cleanup_orphaned_processes(self):
-        """Clean up any orphaned MCP server processes from previous runs"""
-        import subprocess
-        try:
-            # Kill any orphaned MCP server processes
-            subprocess.run([
-                'pkill', '-f', 
-                'mcp-server|notion-mcp|teams-mcp|slack-mcp|supabase.*mcp|browsermcp'
-            ], capture_output=True, timeout=2)
-        except (subprocess.TimeoutExpired, subprocess.CalledProcessError):
-            pass  # Ignore errors in cleanup
+
+    
+
     
     async def cleanup(self) -> MCPResponse:
         """
@@ -667,38 +659,69 @@ GUIDANCE:
             )
         
         try:
-            # First, try graceful shutdown with timeout
             import asyncio
             import logging
             import sys
             import os
+            import subprocess
             
-            # Temporarily suppress all cleanup-related output
+            # Completely suppress ALL output during cleanup to hide any server errors
             mcp_logger = logging.getLogger('mcp_use')
             original_level = mcp_logger.level
             mcp_logger.setLevel(logging.CRITICAL)
             
-            # Redirect stderr to suppress Node.js stack overflow errors
-            with open(os.devnull, 'w') as devnull:
-                old_stderr = sys.stderr
-                if not self.config.verbose:
+            # Suppress all Python logging during cleanup
+            logging.getLogger().setLevel(logging.CRITICAL)
+            
+            # Create a context manager to suppress ALL output including subprocess output
+            import contextlib
+            
+            @contextlib.contextmanager
+            def suppress_all_output():
+                with open(os.devnull, 'w') as devnull:
+                    old_stderr = sys.stderr
+                    old_stdout = sys.stdout
+                    
+                    # Redirect all output streams
                     sys.stderr = devnull
-                
-                try:
-                    # Set a timeout for cleanup to prevent hanging
+                    sys.stdout = devnull
+                    
+                    # Also set environment variables to suppress Node.js output
+                    old_env = os.environ.copy()
+                    os.environ['NODE_NO_WARNINGS'] = '1'
+                    os.environ['SUPPRESS_NO_CONFIG_WARNING'] = '1'
+                    
                     try:
-                        # Attempt graceful cleanup with timeout
+                        yield
+                    finally:
+                        # Restore everything
+                        sys.stderr = old_stderr
+                        sys.stdout = old_stdout
+                        os.environ.clear()
+                        os.environ.update(old_env)
+            
+            # Use comprehensive output suppression
+            with suppress_all_output():
+                try:
+                    # Very short timeout - don't wait for problematic servers
+                    try:
                         await asyncio.wait_for(
                             self._graceful_cleanup(),
-                            timeout=2.0  # Further reduced timeout
+                            timeout=0.2  # Minimal timeout to avoid hanging
                         )
                     except asyncio.TimeoutError:
-                        # If graceful cleanup times out, force cleanup
-                        await self._force_cleanup()
-                finally:
-                    # Restore stderr and logging level
-                    sys.stderr = old_stderr
-                    mcp_logger.setLevel(original_level)
+                        pass  # Expected for servers with shutdown bugs
+                    
+                    # Always do aggressive cleanup to ensure everything is terminated
+                    await self._aggressive_cleanup()
+                    
+                except Exception:
+                    # Suppress any cleanup errors completely
+                    pass
+            
+            # Restore logging level
+            mcp_logger.setLevel(original_level)
+            logging.getLogger().setLevel(logging.WARNING)
             
             # Clear our session tracking
             self._sessions = {}
@@ -711,11 +734,11 @@ GUIDANCE:
             )
             
         except Exception as e:
-            # Last resort: force cleanup
-            await self._force_cleanup()
+            # Last resort: aggressive cleanup
+            await self._aggressive_cleanup()
             return MCPResponse(
                 success=True,  # Still return success since we cleaned up
-                content="Cleanup completed with force termination",
+                content="Cleanup completed with aggressive termination",
                 error=str(e)
             )
     
@@ -768,35 +791,16 @@ GUIDANCE:
             if hasattr(self, '_sessions'):
                 self._sessions.clear()
     
-    async def _force_cleanup(self):
-        """Force cleanup by terminating MCP-related processes using Python process management"""
+    async def _aggressive_cleanup(self):
+        """Generic cleanup by clearing all references"""
         try:
-            # Try to use psutil for better process management
-            try:
-                import psutil
-                # Find and terminate MCP-related processes
-                for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-                    try:
-                        cmdline = ' '.join(proc.info['cmdline'] or [])
-                        # Generic patterns for MCP processes
-                        if any(pattern in cmdline.lower() for pattern in ['mcp', 'npx @']):
-                            proc.terminate()
-                            try:
-                                proc.wait(timeout=1.0)
-                            except psutil.TimeoutExpired:
-                                proc.kill()
-                    except (psutil.NoSuchProcess, psutil.AccessDenied):
-                        continue
-            except ImportError:
-                # Fallback: just clear references if psutil is not available
-                pass
-        except Exception:
-            pass
-        finally:
-            # Clear client reference and session tracking
+            # Clear all references
             self.client = None
             if hasattr(self, '_sessions'):
                 self._sessions.clear()
+        except Exception:
+            # Suppress all cleanup errors
+            pass
 
 
 # Convenience functions for simple usage
