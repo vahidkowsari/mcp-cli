@@ -86,10 +86,10 @@ Example configuration:
 make run
 
 # Or directly
-python main.py
+python mcp-use-cli.py
 
 # Or using the run script
-./run.sh
+./run_mcp_use.sh
 ```
 
 ## 🛠️ Makefile Commands
@@ -242,7 +242,7 @@ Enable debug logging by setting:
 ```bash
 export PYTHONPATH=.
 python -c "import logging; logging.basicConfig(level=logging.DEBUG)"
-python main.py
+python mcp-use-cli.py
 ```
 
 ## 🏗️ Architecture
@@ -434,7 +434,7 @@ The core chat functionality remains the same - you just change how input comes i
 
 ### **File Structure**
 
-- `main.py` - Application entry point and orchestration
+- `mcp-use-cli.py` - Application entry point using mcp-use library
 - `chat_service.py` - **Core chat library (NEW)** - reusable chat functionality
 - `ai_client.py` - AI provider abstraction (OpenAI/Claude)
 - `mcp_manager.py` - MCP connection and tool management

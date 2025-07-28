@@ -61,14 +61,14 @@ setup-env: ## Setup environment variables
 		echo "✅ mcp_config.json already exists"; \
 	fi
 
-# Development commands
-run: ## Start the AI MCP Host application
-	@echo "🚀 Starting AI MCP Host..."
-	@./run.sh
+# Runtime commands
+run: ## Run the MCP-Use CLI
+	@echo "🚀 Starting MCP-Use CLI..."
+	@./run_mcp_use.sh
 
-run-verbose: ## Start the AI MCP Host application with verbose output
-	@echo "🚀 Starting AI MCP Host (verbose mode)..."
-	@./run.sh --verbose
+run-verbose: ## Run the MCP-Use CLI with verbose output
+	@echo "🚀 Starting MCP-Use CLI (verbose mode)..."
+	@./run_mcp_use.sh --verbose
 
 dev: run ## Alias for run (development mode)
 
