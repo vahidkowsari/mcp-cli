@@ -321,6 +321,14 @@ class MCPLibrary:
                     error=f"Rate limit error: {error_msg}",
                     metadata={"prompt": prompt, "error_type": "rate_limit"}
                 )
+            # Check if this is a validation error for better user feedback
+            elif "validation error" in error_msg.lower() and "input should be a valid list" in error_msg.lower():
+                return MCPResponse(
+                    success=False,
+                    content="Schema validation error: AI output format doesn't match API expectations",
+                    error=f"Validation error: {error_msg}\n\nThis is a known limitation where AI generates dict format but API expects array format. This is a schema mismatch between AI behavior and API design.",
+                    metadata={"prompt": prompt, "error_type": "schema_validation"}
+                )
             else:
                 return MCPResponse(
                     success=False,
@@ -432,10 +440,29 @@ class MCPLibrary:
 
     
     async def _safe_agent_run(self, agent, prompt: str) -> str:
-        """Execute agent with basic error handling, relying on mcp-use's built-in validation"""
+        """Execute agent with schema-aware prompting and error handling"""
         try:
-            # Execute the agent - let mcp-use handle validation automatically
-            response = await agent.run(prompt)
+            # Enhance prompt with generic schema guidance
+            enhanced_prompt = f"""{prompt}
+
+IMPORTANT GUIDELINES:
+
+SCHEMA FORMATTING:
+- When using APIs that expect array/list parameters, always provide arrays even for single items
+- For rich text properties, use array format: [{{"text": {{"content": "value"}}}}] not {{"text": {{"content": "value"}}}}
+- For title properties, use array format: [{{"text": {{"content": "title"}}}}] not {{"text": {{"content": "title"}}}}
+- Check API schemas carefully - if a property expects a list/array, always provide it as an array
+- When in doubt about array vs object format, prefer array format for API compatibility
+
+INFORMATION GATHERING:
+- Before asking the user for information, try to find it using available tools first
+- If you need a page ID or UUID, search for the page by name using available search/list tools
+- If you need specific identifiers, explore the available tools to find them programmatically
+- Only ask the user for information as a last resort when tools cannot provide it
+- Be proactive in using available tools to gather required information"""
+            
+            # Execute the agent with enhanced prompt
+            response = await agent.run(enhanced_prompt)
             return response
         except Exception as e:
             # Log the error for debugging if verbose mode is enabled
