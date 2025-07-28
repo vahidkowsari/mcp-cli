@@ -446,13 +446,25 @@ class MCPLibrary:
             enhanced_prompt = f"""{prompt}
 
 IMPORTANT GUIDELINES:
+- Plan your use of tools and check the tool description before using it
+- Make sure you know the parameters for the tools before using them. If you dont have the parameters use other tools to find them
+- If you are not sure about the tool to use, ask for clarification
+
+VALIDATION ERROR HANDLING:
+- If you get a validation error from a tool call, carefully read the error message
+- Use the error details to understand what the API schema expects vs what you provided
+- Look up the tool's schema/documentation to understand the correct format
+- Fix the parameter format based on the error message and try the tool call again
+- Don't give up after one validation error - use the error information to correct your approach
 
 SCHEMA FORMATTING:
-- When using APIs that expect array/list parameters, always provide arrays even for single items
-- For rich text properties, use array format: [{{"text": {{"content": "value"}}}}] not {{"text": {{"content": "value"}}}}
-- For title properties, use array format: [{{"text": {{"content": "title"}}}}] not {{"text": {{"content": "title"}}}}
-- Check API schemas carefully - if a property expects a list/array, always provide it as an array
-- When in doubt about array vs object format, prefer array format for API compatibility
+- Check API schemas carefully - some properties expect arrays, others expect simple values
+- For rich text content properties (like 'title', 'children'), use array format: [{{"text": {{"content": "value"}}}}]
+- For simple string properties (like 'type', 'id', 'name'), use plain string values: "value"
+- For boolean properties, use plain boolean values: true or false
+- For object properties, provide the expected object structure
+- NEVER wrap simple scalar values (strings, numbers, booleans) in arrays unless the schema specifically requires it
+- Only use array format for properties that are explicitly documented as arrays/lists in the API schema
 
 INFORMATION GATHERING:
 - Before asking the user for information, try to find it using available tools first
