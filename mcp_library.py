@@ -7,12 +7,17 @@ Provides a clean API for using MCP tools from other applications
 import asyncio
 import json
 import os
-import time
 import random
-from contextlib import redirect_stderr
+import subprocess
+import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Union
-from dataclasses import dataclass, asdict
+from typing import Any, Dict, List, Optional
+
+from langchain_anthropic import ChatAnthropic
+from langchain_openai import ChatOpenAI
+from mcp_use import MCPAgent, MCPClient
+from pydantic import BaseModel, ValidationError
 
 # Load environment variables from .env file
 try:
@@ -21,15 +26,12 @@ try:
 except ImportError:
     pass  # dotenv not installed, skip
 
-from mcp_use import MCPClient, MCPAgent
-from langchain_openai import ChatOpenAI
-from langchain_anthropic import ChatAnthropic
-
 # Rate limiting and retry configuration
 MAX_RETRIES = 5
 BASE_DELAY = 2.0  # Base delay in seconds
 MAX_DELAY = 60.0  # Maximum delay cap
 JITTER_RANGE = 0.1  # Random jitter range
+MAX_STEPS = 10
 
 # Rate limit error codes and messages
 RATE_LIMIT_ERRORS = [
@@ -41,25 +43,16 @@ RATE_LIMIT_ERRORS = [
     "throttled"
 ]
 
-# Tool validation error patterns
-TOOL_VALIDATION_ERRORS = [
-    "validation error",
-    "pydantic",
-    "input should be",
-    "field required",
-    "type=list_type",
-    "type=dict_type"
-]
+
 
 def is_rate_limit_error(error_msg: str) -> bool:
     """Check if an error is related to rate limiting"""
     error_lower = str(error_msg).lower()
     return any(rate_error in error_lower for rate_error in RATE_LIMIT_ERRORS)
 
-def is_tool_validation_error(error_msg: str) -> bool:
-    """Check if an error is related to tool validation/schema issues"""
-    error_lower = str(error_msg).lower()
-    return any(validation_error in error_lower for validation_error in TOOL_VALIDATION_ERRORS)
+
+
+
 
 def calculate_backoff_delay(attempt: int, base_delay: float = BASE_DELAY) -> float:
     """Calculate exponential backoff delay with jitter"""
@@ -328,14 +321,6 @@ class MCPLibrary:
                     error=f"Rate limit error: {error_msg}",
                     metadata={"prompt": prompt, "error_type": "rate_limit"}
                 )
-            # Check if this is a tool validation error
-            elif is_tool_validation_error(error_msg):
-                return MCPResponse(
-                    success=False,
-                    content="Tool validation error - there may be an issue with the MCP tool schema or AI's tool usage",
-                    error=f"Validation error: {self._extract_validation_error_details(error_msg)}",
-                    metadata={"prompt": prompt, "error_type": "tool_validation"}
-                )
             else:
                 return MCPResponse(
                     success=False,
@@ -345,32 +330,22 @@ class MCPLibrary:
                 )
     
     async def _execute_query_with_retry(self, prompt: str) -> str:
-        """
-        Execute a single query with automatic retry on rate limits
-        
-        Args:
-            prompt: Natural language prompt/query
-            
-        Returns:
-            Response string from the agent
-        """
+        """Execute query with retry logic for rate limits and parameter correction"""
         last_error = None
         
         for attempt in range(self.config.max_retries + 1):
             try:
-                # Create agent for this query
+                # Create and initialize agent for this attempt
                 agent = MCPAgent(
                     client=self.client,
                     llm=self.llm,
+                    max_steps=10,
                     verbose=self.config.verbose
                 )
-                
-                # Initialize the agent
                 await agent.initialize()
                 
-                # Process the query using the correct run method with error handling
+                # Execute query with mcp-use's built-in validation
                 response = await self._safe_agent_run(agent, prompt)
-                
                 return response
                 
             except Exception as e:
@@ -379,10 +354,6 @@ class MCPLibrary:
                 
                 # Check if this is a rate limit error (including OpenAI specific errors)
                 if not (is_rate_limit_error(error_msg) or self._is_openai_rate_limit(e)):
-                    # Check if this is a tool validation error
-                    if is_tool_validation_error(error_msg):
-                        # Tool validation errors should not be retried, but we can provide better feedback
-                        raise Exception(f"Tool validation error: {self._extract_validation_error_details(error_msg)}")
                     # Not a rate limit error, re-raise immediately
                     raise e
                 
@@ -456,44 +427,23 @@ class MCPLibrary:
         
         return None
     
-    def _extract_validation_error_details(self, error_msg: str) -> str:
-        """Extract useful details from validation error messages"""
-        try:
-            # Extract field name and expected type from Pydantic errors
-            if "Input should be" in error_msg:
-                lines = error_msg.split('\n')
-                for line in lines:
-                    if "Input should be" in line:
-                        return line.strip()
-            
-            # Extract field path from validation errors
-            if "validation error" in error_msg.lower():
-                lines = error_msg.split('\n')
-                for line in lines:
-                    if any(field in line for field in ['properties.', 'field required', 'type=']):
-                        return line.strip()
-            
-            # Return first meaningful line if no specific pattern found
-            lines = [line.strip() for line in error_msg.split('\n') if line.strip()]
-            return lines[0] if lines else error_msg
-            
-        except Exception:
-            return error_msg
+
+    
+
     
     async def _safe_agent_run(self, agent, prompt: str) -> str:
-        """Safely run agent with additional error handling"""
+        """Execute agent with basic error handling, relying on mcp-use's built-in validation"""
         try:
+            # Execute the agent - let mcp-use handle validation automatically
             response = await agent.run(prompt)
             return response
         except Exception as e:
-            # Re-raise with additional context for better error handling
-            error_msg = str(e)
-            if "rate limit" in error_msg.lower() or "429" in error_msg:
-                # This is definitely a rate limit error, preserve it
-                raise e
-            else:
-                # Other error, re-raise as-is
-                raise e
+            # Log the error for debugging if verbose mode is enabled
+            if self.config.verbose:
+                print(f"⚠️  Agent execution error: {str(e)[:200]}...")
+            
+            # Re-raise the error to let mcp-use's built-in error handling take over
+            raise e
     
     async def batch_query(self, prompts: List[str]) -> List[MCPResponse]:
         """
@@ -649,20 +599,41 @@ class MCPLibrary:
         try:
             # First, try graceful shutdown with timeout
             import asyncio
+            import logging
+            import sys
+            import os
             
-            # Set a timeout for cleanup to prevent hanging
-            try:
-                # Attempt graceful cleanup with timeout
-                await asyncio.wait_for(
-                    self._graceful_cleanup(),
-                    timeout=5.0  # 5 second timeout
-                )
-            except asyncio.TimeoutError:
-                # If graceful cleanup times out, force cleanup
-                await self._force_cleanup()
+            # Temporarily suppress all cleanup-related output
+            mcp_logger = logging.getLogger('mcp_use')
+            original_level = mcp_logger.level
+            mcp_logger.setLevel(logging.CRITICAL)
             
-            self._initialized = False
+            # Redirect stderr to suppress Node.js stack overflow errors
+            with open(os.devnull, 'w') as devnull:
+                old_stderr = sys.stderr
+                if not self.config.verbose:
+                    sys.stderr = devnull
+                
+                try:
+                    # Set a timeout for cleanup to prevent hanging
+                    try:
+                        # Attempt graceful cleanup with timeout
+                        await asyncio.wait_for(
+                            self._graceful_cleanup(),
+                            timeout=2.0  # Further reduced timeout
+                        )
+                    except asyncio.TimeoutError:
+                        # If graceful cleanup times out, force cleanup
+                        await self._force_cleanup()
+                finally:
+                    # Restore stderr and logging level
+                    sys.stderr = old_stderr
+                    mcp_logger.setLevel(original_level)
+            
+            # Clear our session tracking
             self._sessions = {}
+            self.client = None
+            self._initialized = False
             
             return MCPResponse(
                 success=True,
@@ -679,36 +650,83 @@ class MCPLibrary:
             )
     
     async def _graceful_cleanup(self):
-        """Attempt graceful cleanup"""
-        if not self.config.verbose:
-            # Suppress output during cleanup
-            import sys
-            with open(os.devnull, 'w') as devnull:
-                old_stderr = sys.stderr
-                old_stdout = sys.stdout
-                sys.stderr = devnull
-                sys.stdout = devnull
+        """Gracefully cleanup MCP client and sessions with robust error handling"""
+        if not self.client:
+            return
+            
+        try:
+            import subprocess
+            import asyncio
+            
+            # Generic cleanup: close individual sessions with timeout
+            if hasattr(self, '_sessions') and self._sessions:
+                for session_id, session in list(self._sessions.items()):
+                    try:
+                        await asyncio.wait_for(session.close(), timeout=0.5)
+                    except Exception:
+                        # If graceful close fails, try to terminate the process directly
+                        try:
+                            if hasattr(session, 'connector') and hasattr(session.connector, 'process'):
+                                process = session.connector.process
+                                if process and process.poll() is None:
+                                    # Try graceful termination first
+                                    process.terminate()
+                                    try:
+                                        await asyncio.wait_for(
+                                            asyncio.create_task(asyncio.sleep(0)), timeout=0.1
+                                        )
+                                        process.wait(timeout=0.5)
+                                    except (asyncio.TimeoutError, subprocess.TimeoutExpired):
+                                        # Force kill if graceful termination fails
+                                        process.kill()
+                        except Exception:
+                            pass
+            
+            # Try client's built-in cleanup with timeout
+            if hasattr(self.client, 'close_all_sessions'):
                 try:
-                    await self.client.close_all_sessions()
-                finally:
-                    sys.stderr = old_stderr
-                    sys.stdout = old_stdout
-        else:
-            await self.client.close_all_sessions()
+                    await asyncio.wait_for(self.client.close_all_sessions(), timeout=1.0)
+                except Exception:
+                    pass
+                
+        except Exception:
+            # Suppress all cleanup errors
+            pass
+        finally:
+            # Clear client and session tracking
+            self.client = None
+            if hasattr(self, '_sessions'):
+                self._sessions.clear()
     
     async def _force_cleanup(self):
-        """Force cleanup by terminating MCP server processes"""
-        import subprocess
-        import os
-        
+        """Force cleanup by terminating MCP-related processes using Python process management"""
         try:
-            # Kill any remaining MCP server processes
-            subprocess.run([
-                'pkill', '-f', 
-                'mcp-server|notion-mcp|teams-mcp|slack-mcp|supabase.*mcp|browsermcp'
-            ], capture_output=True, timeout=2)
-        except (subprocess.TimeoutExpired, subprocess.CalledProcessError):
-            pass  # Ignore errors in force cleanup
+            # Try to use psutil for better process management
+            try:
+                import psutil
+                # Find and terminate MCP-related processes
+                for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                    try:
+                        cmdline = ' '.join(proc.info['cmdline'] or [])
+                        # Generic patterns for MCP processes
+                        if any(pattern in cmdline.lower() for pattern in ['mcp', 'npx @']):
+                            proc.terminate()
+                            try:
+                                proc.wait(timeout=1.0)
+                            except psutil.TimeoutExpired:
+                                proc.kill()
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        continue
+            except ImportError:
+                # Fallback: just clear references if psutil is not available
+                pass
+        except Exception:
+            pass
+        finally:
+            # Clear client reference and session tracking
+            self.client = None
+            if hasattr(self, '_sessions'):
+                self._sessions.clear()
 
 
 # Convenience functions for simple usage
